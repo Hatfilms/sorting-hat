@@ -2,29 +2,29 @@ import {
   CacheType,
   ChatInputCommandInteraction,
   GuildMember,
-} from "discord.js";
+} from 'discord.js';
 
-const houseList = ["Smytherin", "Rosslepuff", "Trottindor", "CreggleClaw"];
+const houseList = ['Smytherin', 'Rosslepuff', 'Trottindor', 'CreggleClaw'];
 
-import { ClientInt } from "../../utils/ClientInt";
-import BaseSubCommandExecutor from "../../utils/BaseSubcommandExecutor";
-import { Group } from "../../utils/BaseSlashSubCommand";
+import { ClientInt } from '../../utils/ClientInt';
+import BaseSubCommandExecutor from '../../utils/BaseSubcommandExecutor';
+import { Group } from '../../utils/BaseSlashSubCommand';
 
 class Join extends BaseSubCommandExecutor {
   constructor(baseCommand: string, group: Group) {
-    super(baseCommand, group, "join");
+    super(baseCommand, group, 'join');
   }
 
   async run(
-    _client: ClientInt,
-    interaction: ChatInputCommandInteraction<CacheType>
+    client: ClientInt,
+    interaction: ChatInputCommandInteraction<CacheType>,
   ) {
     const member = interaction.member as GuildMember;
-    const house = interaction.options.getString("house", true);
+    const house = interaction.options.getString('house', true);
 
     // check if there is a role with the house name
     const role = member.guild.roles.cache.find(
-      (role) => role.name.toLowerCase() === house.toLowerCase()
+      (role) => role.name.toLowerCase() === house.toLowerCase(),
     );
 
     if (!role) {
@@ -57,6 +57,7 @@ class Join extends BaseSubCommandExecutor {
 
     // add the house role
     await member.roles.add(role);
+    client.invalidateHouseRankingCache(interaction.guildId);
 
     await interaction.reply({
       content: `You have been added to the house: ${house}`,

@@ -15,16 +15,16 @@ class Leave extends BaseSubCommandExecutor {
   }
 
   async run(
-    _client: ClientInt,
-    interaction: ChatInputCommandInteraction<CacheType>
+    client: ClientInt,
+    interaction: ChatInputCommandInteraction<CacheType>,
   ) {
     const member = interaction.member as GuildMember;
 
     // check if the member has a house role
     const houseRole = member.roles.cache.find((role) =>
       ['Smytherin', 'Rosslepuff', 'Trottindor', 'RavenCraig'].includes(
-        role.name
-      )
+        role.name,
+      ),
     );
 
     if (!houseRole) {
@@ -37,6 +37,7 @@ class Leave extends BaseSubCommandExecutor {
 
     // remove the house role
     await member.roles.remove(houseRole);
+    client.invalidateHouseRankingCache(interaction.guildId);
 
     await interaction.reply({
       content: `You have left the house: ${houseRole.name}`,
