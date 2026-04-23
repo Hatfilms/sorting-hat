@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { ClientInt } from './utils/ClientInt';
 import { registerSubCommands } from './utils/registry';
 import { handleButtonInteraction, handleSubcommand } from './utils/Helpers';
+import { registerScamReviewHandlers } from './handlers/scam-review';
 
 // Get environment variables
 const { CLIENT_ID, GUILD_ID, BOT_TOKEN } = process.env;
@@ -14,9 +15,10 @@ const client = new ClientInt({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildMessagePolls,
   ],
-  partials: [Partials.GuildMember],
+  partials: [Partials.GuildMember, Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
 // Create a new REST API instance and set the token
@@ -61,6 +63,8 @@ client.on('guildMemberAdd', async (member) => {
     client.invalidateHouseRankingCache(member.guild.id);
   }
 });
+
+registerScamReviewHandlers(client);
 
 // Main function
 const main = async () => {
