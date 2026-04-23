@@ -23,9 +23,9 @@ const getTextChannel = async (
   client: Client,
   channelId: string,
 ): Promise<GuildTextBasedChannel | null> => {
-  const channel = (await client.channels.fetch(channelId).catch(() => null)) as
-    | GuildBasedChannel
-    | null;
+  const channel = (await client.channels
+    .fetch(channelId)
+    .catch(() => null)) as GuildBasedChannel | null;
 
   if (!channel || !channel.isTextBased() || channel.isDMBased()) {
     return null;
@@ -142,7 +142,8 @@ export const registerScamReviewHandlers = (client: Client) => {
         )
         .addFields({
           name: 'Auto Action',
-          value: 'User has been timed out immediately pending moderator review.',
+          value:
+            'User has been timed out immediately pending moderator review.',
         })
         .setFooter({ text: 'React below to take action' })
         .setTimestamp();

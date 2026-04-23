@@ -18,7 +18,12 @@ const client = new ClientInt({
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildMessagePolls,
   ],
-  partials: [Partials.GuildMember, Partials.Message, Partials.Channel, Partials.Reaction],
+  partials: [
+    Partials.GuildMember,
+    Partials.Message,
+    Partials.Channel,
+    Partials.Reaction,
+  ],
 });
 
 // Create a new REST API instance and set the token
