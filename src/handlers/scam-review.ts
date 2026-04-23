@@ -63,6 +63,19 @@ const toErrorMessage = (error: unknown) => {
   return 'Unknown error';
 };
 
+const deleteReviewMessage = async (
+  channel: GuildTextBasedChannel,
+  review: PendingReview,
+) => {
+  const reviewMessage = await channel.messages
+    .fetch(review.logMessageId)
+    .catch(() => null);
+
+  if (reviewMessage) {
+    await reviewMessage.delete().catch(() => null);
+  }
+};
+
 export const registerScamReviewHandlers = (client: Client) => {
   const pendingReviewsByMessage = new Map<string, PendingReview>();
   const pendingReviewMessageByUser = new Map<string, string>();
@@ -151,14 +164,8 @@ export const registerScamReviewHandlers = (client: Client) => {
       const logMessage = await logChannel.send({
         content: `🚨 <@&${MOD_ROLE_ID}> - Review needed`,
         embeds: [embed],
+        files: mediaAttachments.map((attachment) => attachment.url),
       });
-
-      for (const attachment of mediaAttachments) {
-        await logChannel.send({
-          content: `📎 ${attachment.name}`,
-          files: [attachment.url],
-        });
-      }
 
       await logMessage.react('✅');
       await logMessage.react('🔨');
@@ -257,6 +264,7 @@ export const registerScamReviewHandlers = (client: Client) => {
               .timeout(null, `Dismissed by ${moderatorTag}`)
               .catch(() => null);
           }
+          await deleteReviewMessage(logChannel, review);
           await logChannel.send(
             `✅ ${userTag}'s post marked as safe by <@${user.id}>. Timeout removed and case dismissed.`,
           );
@@ -267,6 +275,7 @@ export const registerScamReviewHandlers = (client: Client) => {
         case '🔨': {
           const existingBan = await guild.bans.fetch(userId).catch(() => null);
           if (existingBan) {
+            await deleteReviewMessage(logChannel, review);
             await logChannel.send(
               `ℹ️ ${userTag} is already banned. Marking review resolved by <@${user.id}>.`,
             );
@@ -279,6 +288,7 @@ export const registerScamReviewHandlers = (client: Client) => {
             await member.ban({
               reason: `Scam post (4 media attachments) - banned by ${moderatorTag}`,
             });
+            await deleteReviewMessage(logChannel, review);
             await logChannel.send(
               `🔨 ${userTag} has been banned by <@${user.id}>.`,
             );
@@ -291,6 +301,7 @@ export const registerScamReviewHandlers = (client: Client) => {
             const bannedNow = await guild.bans.fetch(userId).catch(() => null);
 
             if (bannedNow) {
+              await deleteReviewMessage(logChannel, review);
               await logChannel.send(
                 `🔨 ${userTag} has been banned by <@${user.id}>.`,
               );
