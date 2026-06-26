@@ -11,21 +11,20 @@ COPY . .
 RUN npm run build
 
 # Production Stage
-FROM node:bullseye-slim AS production
+FROM node:slim AS production
 
 WORKDIR /app
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/version.json ./version.json
+COPY --from=build /app/node_modules ./node_modules
 COPY package*.json ./
 
 RUN apt-get update && apt-get -y upgrade && \
-    apt-get install -y --no-install-recommends python3 make g++ && \
-    npm install --production && \
-    apt-get purge -y --auto-remove python3 make g++ && \
-    rm -rf /var/lib/apt/lists/* && \
+    npm prune --omit=dev && \
     mkdir -p /app/data && \
-    chown -R node:node /app
+    chown -R node:node /app && \
+    rm -rf /var/lib/apt/lists/*
 
 VOLUME ["/app/data"]
 
