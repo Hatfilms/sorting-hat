@@ -1,5 +1,6 @@
 import {
   Attachment,
+  AttachmentBuilder,
   Client,
   EmbedBuilder,
   GuildBasedChannel,
@@ -355,16 +356,31 @@ export const registerScamReviewHandlers = (client: Client) => {
           const logMessage = await logChannel.messages
             .fetch(review.logMessageId)
             .catch(() => null);
-          const attachmentUrls = logMessage
-            ? [...logMessage.attachments.values()].map((a) => a.url)
+          const logAttachments = logMessage
+            ? [...logMessage.attachments.values()]
             : [];
+
+          const repostFiles: AttachmentBuilder[] = [];
+          for (const attachment of logAttachments) {
+            try {
+              const response = await fetch(attachment.url);
+              const buffer = Buffer.from(await response.arrayBuffer());
+              repostFiles.push(
+                new AttachmentBuilder(buffer, {
+                  name: attachment.name ?? "image.png",
+                }),
+              );
+            } catch (error) {
+              console.error("Failed to download attachment for repost:", error);
+            }
+          }
 
           await deleteReviewMessage(logChannel, review);
           await logChannel.send(
             `✅ ${userTag}'s post marked as safe by <@${user.id}>. Timeout removed and case dismissed.`,
           );
 
-          if (attachmentUrls.length > 0) {
+          if (repostFiles.length > 0) {
             const originalChannel = await getTextChannel(
               client,
               review.originalChannelId,
@@ -373,8 +389,8 @@ export const registerScamReviewHandlers = (client: Client) => {
             if (originalChannel) {
               await originalChannel
                 .send({
-                  content: `📷 Reposted on behalf of <@${userId}> (cleared by <@${user.id}>):`,
-                  files: attachmentUrls,
+                  content: `Reposted on behalf of <@${userId}> (cleared by <@${user.id}>):`,
+                  files: repostFiles,
                 })
                 .catch(() => null);
             }
