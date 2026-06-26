@@ -6,17 +6,24 @@ import {
   GuildTextBasedChannel,
   Message,
   PermissionFlagsBits,
-} from 'discord.js';
+} from "discord.js";
+import { inspectImage } from "../utils/ImageTextInspector";
+import {
+  recordImagePost,
+  getCrossChannelHits,
+  CrossChannelHit,
+} from "../utils/sqlite";
 
 type PendingReview = {
   logMessageId: string;
   userId: string;
   userTag: string;
   guildId: string;
+  originalChannelId: string;
 };
 
-const LOG_CHANNEL_ID = '342772823636443137';
-const MOD_ROLE_ID = '342774444235816971';
+const LOG_CHANNEL_ID = "342772823636443137";
+const MOD_ROLE_ID = "342774444235816971";
 const DEFAULT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 const getTextChannel = async (
@@ -31,20 +38,16 @@ const getTextChannel = async (
     return null;
   }
 
-  return channel as GuildTextBasedChannel;
+  return channel;
 };
 
-const isMediaAttachment = (attachment: Attachment) => {
-  if (attachment.contentType?.startsWith('image/')) {
+const isImageAttachment = (attachment: Attachment) => {
+  if (attachment.contentType?.startsWith("image/")) {
     return true;
   }
 
-  if (attachment.contentType?.startsWith('video/')) {
-    return true;
-  }
-
-  const name = attachment.name?.toLowerCase() ?? '';
-  return /\.(png|jpe?g|gif|webp|bmp|mp4|mov|webm|m4v)$/i.test(name);
+  const name = attachment.name?.toLowerCase() ?? "";
+  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(name);
 };
 
 const truncate = (value: string, maxLength = 1024) => {
@@ -60,7 +63,7 @@ const toErrorMessage = (error: unknown) => {
     return error.message;
   }
 
-  return 'Unknown error';
+  return "Unknown error";
 };
 
 const deleteReviewMessage = async (
@@ -76,6 +79,20 @@ const deleteReviewMessage = async (
   }
 };
 
+const notifyUserOfRemoval = async (client: Client, userId: string) => {
+  const user = await client.users.fetch(userId).catch(() => null);
+  if (!user) {
+    return;
+  }
+
+  await user
+    .send(
+      "Your recent image post was removed pending moderator review for potential scam/spam content. " +
+        "If this was a mistake, a moderator will review and restore it shortly.",
+    )
+    .catch(() => null);
+};
+
 export const registerScamReviewHandlers = (client: Client) => {
   const pendingReviewsByMessage = new Map<string, PendingReview>();
   const pendingReviewMessageByUser = new Map<string, string>();
@@ -86,27 +103,63 @@ export const registerScamReviewHandlers = (client: Client) => {
     pendingReviewMessageByUser.delete(review.userId);
   };
 
-  client.on('messageCreate', async (message: Message) => {
+  client.on("messageCreate", async (message: Message) => {
     if (message.author.bot || !message.inGuild()) {
       return;
     }
 
-    const mediaAttachments = [...message.attachments.values()].filter(
-      isMediaAttachment,
+    const imageAttachments = [...message.attachments.values()].filter(
+      isImageAttachment,
     );
 
-    if (mediaAttachments.length !== 4) {
+    if (imageAttachments.length === 0) {
       return;
     }
 
-    const existingReviewMessageId = pendingReviewMessageByUser.get(
-      message.author.id,
-    );
+    if (
+      pendingReviewMessageByUser.has(message.author.id) ||
+      creatingReviewUsers.has(message.author.id)
+    ) {
+      return;
+    }
 
-    if (existingReviewMessageId || creatingReviewUsers.has(message.author.id)) {
-      if (message.deletable) {
-        await message.delete().catch(() => null);
+    let scamKeywords: string[] = [];
+    let crossChannelHits: CrossChannelHit[] = [];
+
+    for (const attachment of imageAttachments) {
+      try {
+        const response = await fetch(attachment.url);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const inspection = await inspectImage(buffer);
+
+        if (inspection.hasScamIndicators) {
+          scamKeywords.push(...inspection.matchedKeywords);
+        }
+
+        recordImagePost(
+          message.author.id,
+          inspection.imageHash,
+          message.channelId,
+          message.id,
+        );
+
+        const hits = getCrossChannelHits(
+          message.author.id,
+          inspection.imageHash,
+        );
+
+        if (hits.length > 0) {
+          crossChannelHits = hits;
+        }
+      } catch (error) {
+        console.error("Image inspection error:", error);
       }
+    }
+
+    const isCrossChannelSpam = crossChannelHits.length > 0;
+    const isScam = scamKeywords.length > 0;
+
+    if (!isScam && !isCrossChannelSpam) {
       return;
     }
 
@@ -126,73 +179,107 @@ export const registerScamReviewHandlers = (client: Client) => {
         await member
           .timeout(
             DEFAULT_TIMEOUT_MS,
-            'Auto-timeout pending scam review (4 media attachments)',
+            isScam
+              ? "Auto-timeout pending scam review (OCR keyword match)"
+              : "Auto-timeout pending scam review (cross-channel image spam)",
           )
           .catch(() => null);
       }
 
+      const reasonValue = isScam
+        ? `OCR keyword match: ${[...new Set(scamKeywords)].join(", ")}`
+        : `Cross-channel spam: same image posted in ${new Set(crossChannelHits.map((hit) => hit.channelId)).size} channels within 60s`;
+
       const embed = new EmbedBuilder()
-        .setTitle('Possible scam - 4 media attachments posted')
+        .setTitle("Possible scam/spam detected")
         .setColor(0xff6b35)
         .addFields(
           {
-            name: 'User',
+            name: "User",
             value: `${message.author.tag} (${message.author.id})`,
           },
           {
-            name: 'Channel',
+            name: "Channel",
             value: `<#${message.channelId}>`,
           },
           {
-            name: 'Content',
-            value: truncate(message.content || '*(no text)*'),
+            name: "Detection reason",
+            value: truncate(reasonValue),
           },
           {
-            name: 'Actions',
+            name: "Content",
+            value: truncate(message.content || "*(no text)*"),
+          },
+          {
+            name: "Actions",
             value:
-              '✅ = Safe (dismiss + remove timeout)\n🔨 = Ban user\n⏰ = Extend timeout 24h\n👁️ = Mark as reviewed',
+              "✅ = Safe (dismiss + remove timeout)\n🔨 = Ban user\n⏰ = Extend timeout 24h\n👁️ = Mark as reviewed",
           },
         )
         .addFields({
-          name: 'Auto Action',
+          name: "Auto Action",
           value:
-            'User has been timed out immediately pending moderator review.',
+            "User has been timed out immediately pending moderator review.",
         })
-        .setFooter({ text: 'React below to take action' })
+        .setFooter({ text: "React below to take action" })
         .setTimestamp();
 
       const logMessage = await logChannel.send({
         content: `🚨 <@&${MOD_ROLE_ID}> - Review needed`,
         embeds: [embed],
-        files: mediaAttachments.map((attachment) => attachment.url),
+        files: imageAttachments.map((attachment) => attachment.url),
       });
 
-      await logMessage.react('✅');
-      await logMessage.react('🔨');
-      await logMessage.react('⏰');
-      await logMessage.react('👁️');
+      await logMessage.react("✅");
+      await logMessage.react("🔨");
+      await logMessage.react("⏰");
+      await logMessage.react("👁️");
 
       const review: PendingReview = {
         logMessageId: logMessage.id,
         userId: message.author.id,
         userTag: message.author.tag,
         guildId: message.guildId,
+        originalChannelId: message.channelId,
       };
 
       pendingReviewsByMessage.set(logMessage.id, review);
       pendingReviewMessageByUser.set(message.author.id, logMessage.id);
 
+      await notifyUserOfRemoval(client, message.author.id);
+
       if (message.deletable) {
-        await message.delete();
+        await message.delete().catch(() => null);
+      }
+
+      if (isCrossChannelSpam) {
+        const otherHits = crossChannelHits.filter(
+          (hit) => hit.messageId !== message.id,
+        );
+
+        for (const hit of otherHits) {
+          const channel = await getTextChannel(client, hit.channelId);
+          if (!channel) {
+            continue;
+          }
+
+          const duplicateMessage = await channel.messages
+            .fetch(hit.messageId)
+            .catch(() => null);
+
+          if (duplicateMessage?.deletable) {
+            await duplicateMessage.delete().catch(() => null);
+          }
+        }
       }
     } catch (error) {
-      console.error('Scam handler error:', error);
+      console.error("Scam handler error:", error);
     } finally {
       creatingReviewUsers.delete(message.author.id);
     }
   });
 
-  client.on('messageReactionAdd', async (reaction, user) => {
+  client.on("messageReactionAdd", async (reaction, user) => {
     if (user.bot) {
       return;
     }
@@ -257,22 +344,47 @@ export const registerScamReviewHandlers = (client: Client) => {
 
     try {
       switch (reaction.emoji.name) {
-        case '✅': {
+        case "✅": {
           const member = await guild.members.fetch(userId).catch(() => null);
           if (member) {
             await member
               .timeout(null, `Dismissed by ${moderatorTag}`)
               .catch(() => null);
           }
+
+          const logMessage = await logChannel.messages
+            .fetch(review.logMessageId)
+            .catch(() => null);
+          const attachmentUrls = logMessage
+            ? [...logMessage.attachments.values()].map((a) => a.url)
+            : [];
+
           await deleteReviewMessage(logChannel, review);
           await logChannel.send(
             `✅ ${userTag}'s post marked as safe by <@${user.id}>. Timeout removed and case dismissed.`,
           );
+
+          if (attachmentUrls.length > 0) {
+            const originalChannel = await getTextChannel(
+              client,
+              review.originalChannelId,
+            );
+
+            if (originalChannel) {
+              await originalChannel
+                .send({
+                  content: `📷 Reposted on behalf of <@${userId}> (cleared by <@${user.id}>):`,
+                  files: attachmentUrls,
+                })
+                .catch(() => null);
+            }
+          }
+
           clearPendingReview(review);
           break;
         }
 
-        case '🔨': {
+        case "🔨": {
           const existingBan = await guild.bans.fetch(userId).catch(() => null);
           if (existingBan) {
             await deleteReviewMessage(logChannel, review);
@@ -286,7 +398,7 @@ export const registerScamReviewHandlers = (client: Client) => {
           const member = await guild.members.fetch(userId).catch(() => null);
           if (member) {
             await member.ban({
-              reason: `Scam post (4 media attachments) - banned by ${moderatorTag}`,
+              reason: `Scam post - banned by ${moderatorTag}`,
             });
             await deleteReviewMessage(logChannel, review);
             await logChannel.send(
@@ -295,7 +407,7 @@ export const registerScamReviewHandlers = (client: Client) => {
           } else {
             await guild.members
               .ban(userId, {
-                reason: `Scam post (4 media attachments) - banned by ${moderatorTag}`,
+                reason: `Scam post - banned by ${moderatorTag}`,
               })
               .catch(() => null);
             const bannedNow = await guild.bans.fetch(userId).catch(() => null);
@@ -316,12 +428,12 @@ export const registerScamReviewHandlers = (client: Client) => {
           break;
         }
 
-        case '⏰': {
+        case "⏰": {
           const member = await guild.members.fetch(userId).catch(() => null);
           if (member) {
             await member.timeout(
               DEFAULT_TIMEOUT_MS,
-              `Scam post (4 media attachments) - timeout extended by ${moderatorTag}`,
+              `Scam post - timeout extended by ${moderatorTag}`,
             );
             await logChannel.send(
               `⏰ ${userTag} timeout has been extended for 24 hours by <@${user.id}>.`,
@@ -336,7 +448,7 @@ export const registerScamReviewHandlers = (client: Client) => {
           break;
         }
 
-        case '👁️': {
+        case "👁️": {
           await logChannel.send(
             `👁️ ${userTag}'s post has been reviewed by <@${user.id}>. Keeping under watch.`,
           );
@@ -347,7 +459,7 @@ export const registerScamReviewHandlers = (client: Client) => {
           break;
       }
     } catch (error) {
-      console.error('Reaction action error:', error);
+      console.error("Reaction action error:", error);
       await logChannel.send(`❌ Action failed: ${toErrorMessage(error)}`);
     }
   });
