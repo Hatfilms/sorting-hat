@@ -16,6 +16,7 @@ FROM node:bullseye-slim AS production
 WORKDIR /app
 
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/version.json ./version.json
 COPY package*.json ./
 
 RUN apt-get update && apt-get -y upgrade && \

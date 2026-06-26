@@ -1,9 +1,41 @@
-import { GatewayIntentBits, Partials, REST, Routes } from 'discord.js';
+import {
+  EmbedBuilder,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} from 'discord.js';
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ClientInt } from './utils/ClientInt';
 import { registerSubCommands } from './utils/registry';
 import { handleButtonInteraction, handleSubcommand } from './utils/Helpers';
 import { registerScamReviewHandlers } from './handlers/scam-review';
+
+const getVersionInfo = () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+  );
+
+  let build = 0;
+  try {
+    const versionJson = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', 'version.json'), 'utf8'),
+    );
+    build = versionJson.build ?? 0;
+  } catch {
+    build = 0;
+  }
+
+  return { version: packageJson.version as string, build };
+};
+
+const versionCommandJSON = new SlashCommandBuilder()
+  .setName('version')
+  .setDescription('Show the running bot version and build number')
+  .toJSON();
 
 // Get environment variables
 const { CLIENT_ID, GUILD_ID, BOT_TOKEN } = process.env;
@@ -35,6 +67,20 @@ client.once('ready', () => console.log(`${client.user?.tag} logged in`));
 // Handle incoming interactions
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === 'version') {
+      const { version, build } = getVersionInfo();
+      const embed = new EmbedBuilder()
+        .setTitle('Sorting Hat - Version')
+        .addFields(
+          { name: 'Version', value: version, inline: true },
+          { name: 'Build', value: `#${build}`, inline: true },
+        )
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return;
+    }
+
     const cmd = await client.commands.get(interaction.commandName);
     const subcommandName = interaction.options.getSubcommand(false);
 
@@ -93,7 +139,7 @@ const main = async () => {
 
     // Register commands and subcommands with Discord API
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
-      body: [...commandsJSON, ...subCommandsJSON],
+      body: [versionCommandJSON, ...commandsJSON, ...subCommandsJSON],
     });
 
     // Log in to Discord
