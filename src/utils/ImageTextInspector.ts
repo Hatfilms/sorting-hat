@@ -1,23 +1,42 @@
-import * as Tesseract from 'tesseract.js';
-import sharp from 'sharp';
-import { createHash } from 'crypto';
-import { getCachedScamResult, saveScamResult, ScamCacheResult } from './sqlite';
+import * as Tesseract from "tesseract.js";
+import sharp from "sharp";
+import { createHash } from "crypto";
+import { getCachedScamResult, saveScamResult, ScamCacheResult } from "./sqlite";
 
 const scamPatterns = [
-  /\b(crypto\s+casi?no|online\s+gambling)\b/i,
-  /\b(giveaway|free\s+money|win\s+prizes|claim\s+reward)\b/i,
-  /\$[\d,]+\b|\b(free\s+\$\d+|earn\s+\$\d+)/i,
+  // Gambling / casinos
+  /\b(crypto\s+casino|online\s+gambling)\b/i,
+
+  // Giveaway scams
+  /\b(giveaway|free\s+money|win\s+prizes?|claim\s+reward)\b/i,
+
+  // Money promises (removed generic "$5" matching)
+  /\b(free\s+\$\d+|earn\s+\$\d+|make\s+\$\d+)\b/i,
+
+  // Rewards
   /\b(bonus|reward|incentive|prize)\b/i,
+
+  // Codes / vouchers
   /\b(promo\s*code|discount\s*code|voucher|coupon)\b/i,
+
+  // Calls to action
   /\b(register|sign\s+up|join\s+now|create\s+account)\b/i,
-  /\b(limited\s+time|exclusive\s+offer|act\s+fast|don\'t\s+miss)/i,
+
+  // Urgency
+  /\b(limited\s+time|exclusive\s+offer|act\s+fast|don't\s+miss)\b/i,
+
+  // Pressure wording
   /\b(instantly|immediately|right\s+away|quick\s+access)\b/i,
-  /\b(no\s+fees|risk-free|guaranteed|secret\s+method)\b/i,
+
+  // Too-good-to-be-true claims
+  /\b(no\s+fees|risk[- ]?free|guaranteed|secret\s+method)\b/i,
+
+  // Crypto
   /\b(bitcoin|ethereum|crypto|wallet|deposit)\b/i,
 ];
 
 export const hashImageBuffer = (imageBuffer: Buffer): string =>
-  createHash('sha256').update(imageBuffer).digest('hex');
+  createHash("sha256").update(imageBuffer).digest("hex");
 
 export const inspectImage = async (
   imageBuffer: Buffer,
@@ -35,9 +54,9 @@ export const inspectImage = async (
       .normalize()
       .toBuffer();
 
-    const result = await Tesseract.recognize(processedBuffer, 'eng');
+    const result = await Tesseract.recognize(processedBuffer, "eng");
 
-    const text = (result.data?.text ?? '').toLowerCase();
+    const text = (result.data?.text ?? "").toLowerCase();
     const matches: string[] = [];
 
     scamPatterns.forEach((pattern) => {
@@ -46,10 +65,10 @@ export const inspectImage = async (
         matches.push(...match.filter((m) => m != null).map((m) => m.trim()));
       }
     });
-
+    const uniqueMatches = [...new Set(matches)];
     const inspectionResult: ScamCacheResult = {
-      hasScamIndicators: matches.length > 0,
-      matchedKeywords: [...new Set(matches)],
+      hasScamIndicators: uniqueMatches.length >= 2,
+      matchedKeywords: uniqueMatches,
       fullText: text,
     };
 
@@ -63,7 +82,7 @@ export const inspectImage = async (
     return {
       hasScamIndicators: false,
       matchedKeywords: [],
-      fullText: '',
+      fullText: "",
       imageHash,
     };
   }
