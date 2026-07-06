@@ -1,6 +1,6 @@
-import * as Tesseract from "tesseract.js";
+import { createWorker, Worker } from "tesseract.js";
 import sharp from "sharp";
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import { getCachedScamResult, saveScamResult, ScamCacheResult } from "./sqlite";
 
 const scamPatterns = [
@@ -35,6 +35,43 @@ const scamPatterns = [
   /\b(bitcoin|ethereum|crypto|wallet|deposit)\b/i,
 ];
 
+// Spinning up a Tesseract worker loads the WASM core and language data,
+// which takes seconds. Keep one persistent worker and reuse it.
+let workerPromise: Promise<Worker> | null = null;
+let ocrQueue: Promise<unknown> = Promise.resolve();
+
+const getWorker = (): Promise<Worker> => {
+  workerPromise ??= createWorker("eng").catch((error) => {
+    workerPromise = null;
+    throw error;
+  });
+
+  return workerPromise;
+};
+
+export const warmUpImageInspector = async () => {
+  try {
+    await getWorker();
+    console.log("OCR worker ready");
+  } catch (error) {
+    console.error(
+      `[ERROR] OCR worker warm-up failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+};
+
+// The worker handles one job at a time, so serialize access to it.
+const recognizeText = (imageBuffer: Buffer): Promise<string> => {
+  const job = ocrQueue.then(async () => {
+    const worker = await getWorker();
+    const result = await worker.recognize(imageBuffer);
+    return result.data?.text ?? "";
+  });
+
+  ocrQueue = job.catch(() => undefined);
+  return job;
+};
+
 export const hashImageBuffer = (imageBuffer: Buffer): string =>
   createHash("sha256").update(imageBuffer).digest("hex");
 
@@ -54,13 +91,11 @@ export const inspectImage = async (
       .normalize()
       .toBuffer();
 
-    const result = await Tesseract.recognize(processedBuffer, "eng");
-
-    const text = (result.data?.text ?? "").toLowerCase();
+    const text = (await recognizeText(processedBuffer)).toLowerCase();
     const matches: string[] = [];
 
     scamPatterns.forEach((pattern) => {
-      const match = text.match(pattern);
+      const match = pattern.exec(text);
       if (match) {
         matches.push(...match.filter((m) => m != null).map((m) => m.trim()));
       }

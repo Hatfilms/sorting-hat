@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import path from 'node:path';
+import fs from 'node:fs';
 
 const dbPath = process.env.SQLITE_DB_PATH || path.join('.', 'data', 'moderation.sqlite');
 
@@ -24,12 +24,26 @@ db.exec(`
     image_hash TEXT NOT NULL,
     channel_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    has_text INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE INDEX IF NOT EXISTS idx_recent_image_posts_lookup
     ON recent_image_posts (user_id, image_hash, created_at);
 `);
+
+// Migrate databases created before the has_text column existed.
+const hasTextColumn = db
+  .prepare(
+    "SELECT COUNT(*) AS count FROM pragma_table_info('recent_image_posts') WHERE name = 'has_text'",
+  )
+  .get() as { count: number };
+
+if (hasTextColumn.count === 0) {
+  db.exec(
+    'ALTER TABLE recent_image_posts ADD COLUMN has_text INTEGER NOT NULL DEFAULT 0',
+  );
+}
 
 export type ScamCacheResult = {
   hasScamIndicators: boolean;
@@ -86,22 +100,54 @@ export type CrossChannelHit = {
 
 const CROSS_CHANNEL_WINDOW_MS = 60 * 1000;
 const CROSS_CHANNEL_THRESHOLD = 3;
+const RAPID_POST_WINDOW_MS = 1000;
+const RAPID_POST_CHANNEL_THRESHOLD = 2;
 
 export const recordImagePost = (
   userId: string,
   imageHash: string,
   channelId: string,
   messageId: string,
+  createdAt: number = Date.now(),
+  hasText = false,
 ) => {
-  const now = Date.now();
   db.prepare(
     'DELETE FROM recent_image_posts WHERE created_at < ?',
-  ).run(now - CROSS_CHANNEL_WINDOW_MS);
+  ).run(Date.now() - CROSS_CHANNEL_WINDOW_MS);
 
   db.prepare(
-    `INSERT INTO recent_image_posts (user_id, image_hash, channel_id, message_id, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(userId, imageHash, channelId, messageId, now);
+    `INSERT INTO recent_image_posts (user_id, image_hash, channel_id, message_id, created_at, has_text)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(userId, imageHash, channelId, messageId, createdAt, hasText ? 1 : 0);
+};
+
+// Image-only posts landing in multiple channels within a second is bot
+// behaviour regardless of whether the images match.
+export const getRapidImageOnlyHits = (
+  userId: string,
+  referenceTime: number = Date.now(),
+  windowMs: number = RAPID_POST_WINDOW_MS,
+  channelThreshold: number = RAPID_POST_CHANNEL_THRESHOLD,
+): CrossChannelHit[] => {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT channel_id, message_id FROM recent_image_posts
+       WHERE user_id = ? AND has_text = 0 AND created_at >= ?`,
+    )
+    .all(userId, referenceTime - windowMs) as {
+    channel_id: string;
+    message_id: string;
+  }[];
+
+  const distinctChannels = new Set(rows.map((row) => row.channel_id));
+  if (distinctChannels.size < channelThreshold) {
+    return [];
+  }
+
+  return rows.map((row) => ({
+    channelId: row.channel_id,
+    messageId: row.message_id,
+  }));
 };
 
 export const getCrossChannelHits = (
